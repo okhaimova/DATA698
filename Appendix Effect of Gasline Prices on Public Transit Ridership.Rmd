@@ -1,0 +1,723 @@
+---
+title: "Appendix"
+output: pdf_document
+---
+
+\setcounter{page}{22}
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+library(tidyverse)
+library(magrittr)
+library(fpp3)
+library(caret)
+library(corrplot)
+```
+
+
+```{r loading data}
+mta2020 <- read.csv("https://raw.githubusercontent.com/okhaimova/DATA698/main/MTA_Daily_Ridership_Data__Beginning_2020.csv")
+gas <- read.csv("https://raw.githubusercontent.com/okhaimova/DATA698/main/NYC%20Weekly%20Retail%20Gasoline%20and%20Diesel.csv",
+                skip = 2, header = TRUE)
+bicycle_count <- read.csv("Bicycle_Counts.csv")
+counters <- read.csv("Bicycle_Counters.csv")
+```
+
+
+```{r mta cleanup}
+mta2020 <- mta2020 %>%
+  set_colnames(c("Date", "Subway", "Subway_Pre", "Buses", "Buses_Pre", "LIRR", "LIRR_Pre", 
+                 "MetroNorth","MetroNorth_Pre", "Access-A-Ride", "Access-A-Ride_Pre", 
+                 "Bridges_and_Tunnels", "Bridges_and_Tunnels_Pre")) %>%
+  mutate(Date = as.Date(Date, format = "%m/%d/%Y")) %>%
+  arrange(Date) 
+```
+
+
+
+```{r gas cleanup}
+gas <- gas %>%
+  dplyr::select(1:9) %>%
+  select(contains(c("Date","City"))) %>%
+  set_colnames(c("Date", "All_Grades", "Regular", "Midgrade", "Premium")) %>%
+  mutate(Date = as.Date(Date, format = "%b %d, %Y")) %>%
+  na.omit()
+```
+
+
+```{r bike cleanup, message = FALSE}
+# these are the ids that match the five bridge counters
+bridge_ids <- c("100010018", "100062893", "100009428", "300020904", "100009427")
+
+counters <- counters %>%
+  mutate(id = as.character(id))
+
+bicycle_count <- bicycle_count %>%
+  mutate(date = as.Date(date, "%m/%d/%Y")) %>%
+  group_by(id, date) %>%
+  summarise(total = sum(counts)) %>%
+  filter(id %in% bridge_ids) %>%
+  mutate(id = as.character(id)) %>%
+  left_join(counters, by = 'id') %>%
+  select(c(date, id, name, total)) %>%
+  filter(date > "2014-12-31")
+
+brooklyn_febraury_avg <- bicycle_count %>%
+  filter(id == "300020904",
+         date >= "2022-02-01" & date < "2022-03-01",
+         date != "2022-02-08") %>%
+  summarise(mean = mean(total)) %>%
+  select(mean) %>%
+  as.numeric()
+
+# replace the outlier
+bicycle_count <- bicycle_count %>%
+  mutate(total = replace(total, total == 68200, round(brooklyn_febraury_avg,0)))
+```
+
+
+```{r weekly combine, warning=FALSE, message=FALSE}
+mta_weekly <- mta2020 %>%
+  filter(Date > "2020-03-01") %>%
+  mutate(Date = yearweek(Date)) %>%
+  group_by(Date) %>%
+  summarise(Subway = sum(Subway),
+            Buses = sum(Buses),
+            LIRR = sum(LIRR),
+            MetroNorth = sum(MetroNorth),
+            `Access-A-Ride` = sum(`Access-A-Ride`),
+            Bridges_and_Tunnels = sum(Bridges_and_Tunnels)) %>%
+  mutate(MTA = rowSums(across(c(Subway, Buses))))
+  
+gas_weekly <- gas %>%
+  filter(Date > "2020-03-01") %>%
+  mutate(Date = yearweek(Date))
+
+bike_weekly <- bicycle_count %>%
+  filter(date > "2020-03-01") %>%
+  mutate(date = yearweek(date)) %>%
+  group_by(date) %>%
+  summarise(Bikes = sum(total)) %>%
+  rename(Date = date) 
+
+
+weekly <- plyr::join_all(list(mta_weekly, bike_weekly, gas_weekly), 
+              by = "Date", type = 'left')
+
+```
+
+#### A.1 
+
+Weekly Price of Gasoline
+
+```{r, out.width = "50%", fig.show="hold"}
+gas %>%
+  filter(Date >= "2020-01-01") %>%
+  ggplot(aes(x = Date, y = All_Grades)) +
+  geom_line() +
+  labs(title = "Price of Gasoline for All Grades, NYC",
+       y = "$USD")
+
+gas %>%
+  filter(Date >= "2020-01-01") %>%
+  pivot_longer(-Date) %>%
+  filter(name != "All_Grades") %>%
+  ggplot(aes(x = Date, y = value, colour = name)) +
+  geom_line() +
+  facet_grid(factor(name, levels =c("Regular", "Midgrade", "Premium")) ~., scales = "free_y") +
+  labs(title = "Price of Gasoline, NYC, bu subgrade",
+       y = "$USD",
+       color = "Gasoline Grade")
+```
+
+
+#### A.2
+
+Daily MTA Ridership
+
+```{r daily mta, message=FALSE, warning=FALSE, fig.height=4, fig.align = 'center'}
+mta2020 %>%
+  dplyr::select(Date, Subway, Buses) %>%
+  pivot_longer(-Date) %>%
+  ggplot(aes(x = Date, y = value, colour = name)) +
+  geom_line() +
+  facet_grid(name ~., scales = "free_y") +
+  labs(title = "Daily MTA Ridership",
+       y = "Count",
+       color = "Mode")
+
+mta2020 %>%
+  dplyr::select(Date, LIRR, MetroNorth, "Access-A-Ride") %>%
+  pivot_longer(-Date) %>%
+  ggplot(aes(x = Date, y = value, colour = name)) +
+  geom_line() +
+  facet_grid(name ~., scales = "free_y") +
+  labs(title = "Daily MTA Ridership",
+       y = "Count",
+       color = "Mode")
+```
+
+#### A.3 
+
+Weekly MTA Ridership
+
+```{r weekly mta, message=FALSE, warning = FALSE, fig.height=4, fig.align = 'center'}
+weekly %>%
+  dplyr::select(Date, Subway, Buses, LIRR, MetroNorth, "Access-A-Ride") %>%
+  pivot_longer(-Date) %>%
+  ggplot(aes(x = Date, y = value, colour = name)) +
+  geom_line() +
+  facet_grid(name ~., scales = "free_y") +
+  labs(title = "Weekly MTA Ridership",
+       y = "Count",
+       color = "Mode")
+```
+
+\newpage
+
+#### A.4
+
+STL Decomposition of Subway Ridership
+
+```{r subway stl, message=FALSE, warning = FALSE, fig.height=4, fig.align = 'center'}
+mta2020 %>%
+  as_tsibble(index = Date) %>%
+  model(STL(Subway ~ season(window = "periodic"), robust = TRUE)) %>%
+  components() %>%
+  autoplot() +
+  labs(title = "STL Decomposition of Subway Ridership")
+```
+
+
+#### A.5 
+
+Daily Bicycle Ridership by NYC Bridge
+
+```{r bike, fig.height=4, fig.align = 'center'}
+bridge.labs<- c('Brooklyn', 'Queensboro', 'Manhattan', 'Pulaski', 'Williamsburg')
+
+bicycle_count %>%
+  mutate(name = replace(name, name == 'Williamsburg Bridge Bike Path', 'Williamsburg'),
+         name = replace(name, name == 'Pulaski Bridge', 'Pulaski'),
+         name = replace(name, name == 'Manhattan Bridge Bike Comprehensive', 'Manhattan'),
+         name = replace(name, name == 'Ed Koch Queensboro Bridge Shared Path', 'Queensboro'),
+         name = replace(name, name == 'Comprehensive Brooklyn Bridge Counter', 'Brooklyn')) %>%
+  ggplot(aes(x = date, y = total, color = name)) +
+  geom_line() +
+  facet_grid(name ~., scales = "free_y") +
+  ggtitle("Daily Bicycle Ridership by NYC Bridge")
+```
+
+#### A.6 
+
+STL Decomposition of Weekly Bicycle Ridership
+
+```{r bike stl, fig.height=4, fig.align = 'center'}
+weekly %>%
+  as_tsibble(index = Date) %>%
+  model(STL(Bikes ~ season(window = "periodic"), robust = TRUE)) %>%
+  components() %>%
+  autoplot() +
+  labs(title = "Bicycle STL Decomposition")
+```
+
+\newpage
+
+#### A.7
+
+Gas vs. Mode of Transportation
+
+```{r gas vs, message = FALSE, warning = FALSE, fig.show='hold', out.width="50%"}
+weekly %>%
+  ggplot(aes(x = Date)) +
+  geom_line(aes(y = MTA), color = "steelblue") +
+  geom_line(aes(y = All_Grades * 10000000), color = "darkred") +
+  scale_y_continuous(name = "MTA Subway & Bus Ridership",
+                     sec.axis = sec_axis(~./10000000, name = "Price of Gasoline")) +
+  labs(title = "Gasoline vs. MTA Bus & Subway")
+
+weekly %>%
+  ggplot(aes(x = Date)) +
+  geom_line(aes(y = Buses), color = "steelblue") +
+  geom_line(aes(y = All_Grades * 5000000), color = "darkred") +
+  scale_y_continuous(name = "MTA Bus Ridership",
+                     sec.axis = sec_axis(~./5000000, name = "Price of Gasoline")) +
+  labs(title = "Gasoline vs Bus Ridership")
+
+weekly %>%
+  ggplot(aes(x = Date)) +
+  geom_line(aes(y = Subway), color = "steelblue") +
+  geom_line(aes(y = All_Grades * 5000000), color = "darkred") +
+  scale_y_continuous(name = "MTA Subway Ridership",
+                     sec.axis = sec_axis(~./5000000, name = "Price of Gasoline")) +
+  labs(title = "Gasoline vs Subway Ridership")
+
+weekly %>%
+  ggplot(aes(x = Date)) +
+  geom_line(aes(y = Bikes), color = "steelblue") +
+  geom_line(aes(y = All_Grades * 100000), color = "darkred") +
+  scale_y_continuous(name = "Bike Ridership",
+                     sec.axis = sec_axis(~./100000, name = "Price of Gasoline")) +
+  labs(title = "Gasoline vs Bike Ridership")
+
+weekly %>%
+  ggplot(aes(x = Date)) +
+  geom_line(aes(y = LIRR), color = "steelblue") +
+  geom_line(aes(y = All_Grades * 500000), color = "darkred") +
+  scale_y_continuous(name = "LIRR Ridership",
+                     sec.axis = sec_axis(~./500000, name = "Price of Gasoline")) +
+  labs(title = "Gasoline vs LIRR Ridership")
+
+weekly %>%
+  ggplot(aes(x = Date)) +
+  geom_line(aes(y = MetroNorth), color = "steelblue") +
+  geom_line(aes(y = All_Grades * 500000), color = "darkred") +
+  scale_y_continuous(name = "MetroNorth Ridership",
+                     sec.axis = sec_axis(~./500000, name = "Price of Gasoline")) +
+  labs(title = "Gasoline vs Metro-North Ridership")
+
+weekly %>%
+  ggplot(aes(x = Date)) +
+  geom_line(aes(y = Bridges_and_Tunnels), color = "steelblue") +
+  geom_line(aes(y = All_Grades * 1000000), color = "darkred") +
+  scale_y_continuous(name = "Crossings",
+                     sec.axis = sec_axis(~./1000000, name = "Price of Gasoline")) +
+  labs(title = "Gasoline vs Bridges & Tunnels Crossings")
+
+weekly %>%
+  ggplot(aes(x = Date)) +
+  geom_line(aes(y = `Access-A-Ride`), color = "steelblue") +
+  geom_line(aes(y = All_Grades * 50000), color = "darkred") +
+  scale_y_continuous(name = "ccess-A-Ride",
+                     sec.axis = sec_axis(~./50000, name = "Price of Gasoline")) +
+  labs(title = "Gasoline vs Access-A-Ride")
+```
+
+\newpage
+
+#### A.8
+
+Baseline Regression Models with Mode of Transportation
+
+###### Subway Linear
+
+```{r}
+model1<- lm(Subway ~ All_Grades, weekly)
+
+summary(model1)
+
+```
+
+##### Buses Linear
+
+```{r}
+lm(Buses ~ All_Grades, weekly) %>% summary()
+```
+
+\newpage
+
+##### LIRR Linear
+
+```{r}
+lm(LIRR ~ All_Grades, weekly) %>% summary()
+```
+
+##### Metro-North Linear
+
+```{r}
+lm(MetroNorth ~ All_Grades, weekly) %>% summary()
+```
+
+\newpage
+
+##### Access-a-Ride Linear
+
+```{r}
+lm(`Access-A-Ride` ~ All_Grades, weekly) %>% summary()
+```
+
+##### Bridges and Tunnels Linear
+
+```{r}
+lm(Bridges_and_Tunnels ~ All_Grades, weekly) %>% summary()
+```
+
+\newpage
+
+##### Subway and Buses Combined Linear
+
+```{r}
+lm(MTA ~ All_Grades, weekly) %>% summary()
+```
+
+##### Bikes Linear
+
+```{r}
+lm(Bikes ~ All_Grades, weekly) %>% summary()
+```
+
+\newpage
+
+#### A.9 
+
+Linear Regression Comparison
+
+```{r}
+weekly %>%
+  select(-c(All_Grades, Regular, Midgrade, Premium, Date)) %>%
+  map(~lm(.x ~ All_Grades, data = weekly)) %>%
+  map(glance) %>%
+  do.call(rbind.data.frame, .) %>%
+  rownames_to_column() 
+
+
+
+weekly %>%
+  select(-c(All_Grades, Regular, Midgrade, Premium, Date)) %>%
+  map(~lm(.x ~ All_Grades, data = weekly)) %>% 
+  map(glance) %>% 
+  do.call(rbind.data.frame, .) %>% 
+  rownames_to_column %>% 
+  as_tibble %>% 
+  ggplot(aes(x = reorder(rowname, -r.squared), y = r.squared)) +
+  geom_col() +
+  coord_flip() + 
+  scale_y_continuous(labels = scales::percent) +
+  labs(x = "Mode of Transportation",
+       y = expression( R^{2}),
+       title = expression(paste("Comparison of ", R^{2})))
+```
+
+\newpage
+
+#### A.10
+
+Baseline Regression Models, Breakdown by Gasoline Grade
+
+###### Subway Linear, by subgrade
+
+```{r}
+model1<- lm(Subway ~ Regular + Midgrade + Premium, weekly)
+
+summary(model1)
+
+```
+
+##### Buses Linear, by subgrade
+
+```{r}
+lm(Buses ~ Regular + Midgrade + Premium, weekly) %>% summary()
+```
+
+\newpage
+
+##### LIRR Linear, by subgrade
+
+```{r}
+lm(LIRR ~ Regular + Midgrade + Premium, weekly) %>% summary()
+```
+
+##### Metro-North Linear, by subgrade
+
+```{r}
+lm(MetroNorth ~ Regular + Midgrade + Premium, weekly) %>% summary()
+```
+
+\newpage
+
+##### Access-a-Ride Linear, by subgrade
+
+```{r}
+lm(`Access-A-Ride` ~ Regular + Midgrade + Premium, weekly) %>% summary()
+```
+
+##### Bridges and Tunnels Linear, by subgrade
+
+```{r}
+lm(Bridges_and_Tunnels ~ Regular + Midgrade + Premium, weekly) %>% summary()
+```
+
+\newpage
+
+##### Subway and Buses Combined Linear, by subgrade
+
+```{r}
+lm(MTA ~ Regular + Midgrade + Premium, weekly) %>% summary()
+```
+
+##### Bikes Linear, by subgrade
+
+```{r}
+lm(Bikes ~ Regular + Midgrade + Premium, weekly) %>% summary()
+```
+
+\newpage
+
+#### A.11
+
+Linear Regression Comparison, by Gasoline Subgrade
+
+```{r}
+weekly %>%
+  select(-c(All_Grades, Regular, Midgrade, Premium, Date)) %>%
+  map(~lm(.x ~ Regular + Midgrade + Premium, data = weekly)) %>%
+  map(glance) %>%
+  do.call(rbind.data.frame, .) %>%
+  rownames_to_column() 
+
+
+
+weekly %>%
+  select(-c(All_Grades, Regular, Midgrade, Premium, Date)) %>%
+  map(~lm(.x ~ Regular + Midgrade + Premium, data = weekly)) %>% 
+  map(glance) %>% 
+  do.call(rbind.data.frame, .) %>% 
+  rownames_to_column %>% 
+  as_tibble %>% 
+  ggplot(aes(x = reorder(rowname, -adj.r.squared), y = adj.r.squared)) +
+  geom_col() +
+  coord_flip() + 
+  scale_y_continuous(labels = scales::percent) +
+  labs(x = "Mode of Transportation",
+       y = expression(paste("Adjusted ", R^{2})),
+       title = expression(paste("Comparison of Adjusted ", R^{2})))
+```
+
+\newpage
+
+#### A.12
+
+Linear-Log Regression with Logarithmic Transformation of Gas
+
+###### Subway Linear-Log
+
+```{r}
+lm(Subway ~ log(All_Grades), weekly) %>% summary()
+
+```
+
+##### Buses Linear-Log
+
+```{r}
+lm(Buses ~ log(All_Grades), weekly) %>% summary()
+```
+
+\newpage
+
+##### LIRR Linear-Log
+
+```{r}
+lm(LIRR ~ log(All_Grades), weekly) %>% summary()
+```
+
+##### Metro-North Linear-Log
+
+```{r}
+lm(MetroNorth ~ log(All_Grades), weekly) %>% summary()
+```
+
+\newpage
+
+##### Access-a-Ride Linear-Log
+
+```{r}
+lm(`Access-A-Ride` ~ log(All_Grades), weekly) %>% summary()
+```
+
+##### Bridges and Tunnels Linear-Log
+
+```{r}
+lm(Bridges_and_Tunnels ~ log(All_Grades), weekly) %>% summary()
+```
+
+\newpage
+
+##### Subway and Buses Combined Linear-Log
+
+```{r}
+lm(MTA ~ log(All_Grades), weekly) %>% summary()
+```
+
+##### Bikes Linear-Log
+
+```{r}
+lm(Bikes ~ log(All_Grades), weekly) %>% summary()
+```
+
+\newpage
+
+#### A.13
+
+Linear-Log Regression Comparison
+
+```{r}
+weekly %>%
+  select(-c(All_Grades, Regular, Midgrade, Premium, Date)) %>%
+  map(~lm(.x ~ log(All_Grades), data = weekly)) %>%
+  map(glance) %>%
+  do.call(rbind.data.frame, .) %>%
+  rownames_to_column() 
+
+
+
+weekly %>%
+  select(-c(All_Grades, Regular, Midgrade, Premium, Date)) %>%
+  map(~lm(.x ~ log(All_Grades), data = weekly)) %>% 
+  map(glance) %>% 
+  do.call(rbind.data.frame, .) %>% 
+  rownames_to_column %>% 
+  as_tibble %>% 
+  ggplot(aes(x = reorder(rowname, -adj.r.squared), y = adj.r.squared)) +
+  geom_col() +
+  coord_flip() + 
+  scale_y_continuous(labels = scales::percent) +
+  labs(x = "Mode of Transportation",
+       y = expression(paste("Adjusted ", R^{2})),
+       title = expression(paste("Comparison of Adjusted ", R^{2})))
+```
+
+\newpage
+
+#### A.14
+
+Linear Regression with Dummy Variables
+
+##### Subway Linear with log(Gas) + Trend + Season
+
+
+```{r}
+weekly_ts <- weekly %>%
+  as_tsibble(index = Date)
+
+model_subway <- weekly_ts %>% 
+  model(TSLM(Subway ~ log(All_Grades) + trend() + fourier(K = 13)))
+
+model_subway %>%
+  report()
+```
+
+\newpage
+
+##### Buses Linear with log(Gas) + Trend + Season
+
+```{r}
+model_buses <- weekly_ts %>%
+  model(TSLM(Buses ~ log(All_Grades) + trend() + fourier(K = 13))) 
+
+model_buses %>%
+  report()
+```
+
+\newpage
+
+##### LIRR Linear with log(Gas) + Trend + Season
+
+```{r}
+model_LIRR <- weekly_ts %>%
+  model(TSLM(LIRR ~ log(All_Grades) + trend() + fourier(K = 13))) 
+
+model_LIRR %>%
+  report()
+```
+
+\newpage
+
+##### MetroNorth Linear with log(Gas) + Trend + Season
+
+```{r}
+model_metronorth <- weekly_ts %>%
+  model(TSLM(MetroNorth ~ log(All_Grades) + trend() + fourier(K = 13))) 
+
+model_metronorth %>%
+  report()
+```
+
+\newpage
+
+##### Access-A-Ride Linear with Gas + Season
+
+```{r}
+weekly_ts %>% model(TSLM(`Access-A-Ride` ~ All_Grades + fourier(K = 13)))
+```
+
+\newpage
+
+##### Bridges and Tunnels Linear with log(Gas) + Season
+
+```{r}
+weekly_ts %>% 
+  model(TSLM(Bridges_and_Tunnels ~ log(All_Grades) + fourier(K = 13))) %>% 
+  report()
+```
+
+\newpage
+
+##### Combined Subway and Bus Linear with log(Gas) + Trend + Season
+
+```{r}
+weekly_ts %>% 
+  model(TSLM(MTA ~ log(All_Grades) + trend() + fourier(K = 13))) %>%
+  report()
+```
+
+\newpage
+
+##### Bikes Linear with Gas + Season
+
+```{r}
+model_bikes <- weekly_ts %>%
+  model(TSLM(Bikes ~ All_Grades + fourier(K = 13))) 
+
+model_bikes %>%
+  report()
+```
+
+\newpage
+
+#### A.15 
+
+Linear with Trend and Seasonality Regression Comparison
+
+#### Linear with Trend and Seasonality
+
+```{r}
+model_aar <- weekly_ts %>% model(TSLM(`Access-A-Ride` ~ All_Grades + fourier(K = 13))) 
+
+model_bat <- weekly_ts %>% model(TSLM(Bridges_and_Tunnels ~ log(All_Grades) + fourier(K = 13)))
+
+model_mta <- weekly_ts %>% model(TSLM(MTA ~ log(All_Grades) + trend() + fourier(K = 13))) 
+
+names <- c("Subway", "Buses", "LIRR", "MetroNorth", "Bikes", "Access-A-Ride",
+           "Bridges_and_Tunnels", "MTA")
+
+trend_models <- 
+  rbind(glance(model_subway),
+        glance(model_buses),
+        glance(model_LIRR),
+        glance(model_metronorth),
+        glance(model_bikes),
+        glance(model_aar),
+        glance(model_bat),
+        glance(model_mta)) %>%
+  select(.model:adj_r_squared) %>%
+  cbind(names, .)
+
+
+trend_models %>% select(.model:adj_r_squared)
+
+
+trend_models %>% 
+  as_tibble %>% 
+  ggplot(aes(x = reorder(names, -adj_r_squared), y = adj_r_squared)) +
+  geom_col() +
+  coord_flip() + 
+  scale_y_continuous(labels = scales::percent) +
+  labs(x = "Mode of Transportation",
+       y = expression(paste("Adjusted ", R^{2})),
+       title = expression(paste("Comparison of Adjusted ", R^{2})))
+```
+
+
+
+
+
